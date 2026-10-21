@@ -44,6 +44,11 @@ async function ensureTools() {
   if (!hasYtDlp) throw new Error('yt-dlp no está instalado o no está en PATH. Ejecuta "yt-dlp --version" en PowerShell para comprobarlo.')
   if (!hasFfmpeg) throw new Error('FFmpeg no está instalado o no está en PATH. Ejecuta "ffmpeg -version" en PowerShell para comprobarlo.')
 
+  const hasX264 = await commandSupportsEncoder(ff!, 'libx264')
+  const hasAac = await commandSupportsEncoder(ff!, 'aac')
+  if (!hasX264) throw new Error('Tu FFmpeg no incluye el encoder libx264. Instala una compilación completa de FFmpeg para generar MP4 compatibles con reproductores Android de carro.')
+  if (!hasAac) throw new Error('Tu FFmpeg no incluye el encoder AAC. Instala una compilación completa de FFmpeg.')
+
   const ytVersion = await commandVersion(yt!)
   if (ytVersion) console.log(`[youtube-playlist-downloader] yt-dlp ${ytVersion}`)
   console.log(`[youtube-playlist-downloader] Node ${process.versions.node}`)
@@ -59,11 +64,31 @@ function commandVersion(command: string) {
   })
 }
 
+function commandSupportsOption(command: string, option: string) {
+  return new Promise<boolean>((resolve) => {
+    execFile(command, ['--help'], { windowsHide: true, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const help = `${stdout || ''}\n${stderr || ''}`
+      if (error && !help) return resolve(false)
+      resolve(new RegExp(`(?:^|\\s)${option.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s|$)`, 'm').test(help))
+    })
+  })
+}
+
+async function commandSupportsEncoder(command: string, encoder: string) {
+  return new Promise<boolean>((resolve) => {
+    execFile(command, ['-hide_banner', '-encoders'], { windowsHide: true, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const text = `${stdout || ''}\n${stderr || ''}`
+      if (error && !text) return resolve(false)
+      resolve(new RegExp(`\\b${encoder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'm').test(text))
+    })
+  })
+}
+
 function nodeMajor() {
   return Number.parseInt(process.versions.node.split('.')[0] || '0', 10)
 }
 
-function argsFor(job: any, outDir: string) {
+function argsFor(job: any, outDir: string, enableJsRuntime: boolean, enablePostprocessorArgs: boolean) {
   const output = join(outDir, '%(playlist_index)03d - %(title)s.%(ext)s')
 
   const common = [
@@ -73,28 +98,42 @@ function argsFor(job: any, outDir: string) {
     '--restrict-filenames',
     '--newline',
     '--progress',
-    '--no-warnings',
     '-o', output,
     '--playlist-end', String(job.quantity),
     job.url
   ]
 
-  // Current yt-dlp releases use EJS to solve YouTube's JavaScript challenges.
-  // Node 22+ is a supported JS runtime; enable it automatically when available.
-  if (nodeMajor() >= 22) {
+  // Newer yt-dlp releases can solve YouTube JS challenges using Node.
+  // Older versions do not recognize --js-runtimes, so only add the option
+  // after checking the installed executable supports it.
+  if (enableJsRuntime && nodeMajor() >= 22) {
     common.unshift('--js-runtimes', 'node')
   }
 
   if (job.mode === 'music') {
     const q = job.quality === 'best' ? '0' : job.quality
-    common.unshift('-x', '--audio-format', job.format, '--audio-quality', q)
+    // MP3 is the most compatible choice for phones, car stereos, TVs and
+    // older media players. Keep the source audio selection, then force a
+    // conventional MP3 layout during FFmpeg post-processing.
+    if (enablePostprocessorArgs) {
+      common.unshift(
+        '--postprocessor-args',
+        'ExtractAudio:-ar 44100 -ac 2 -id3v2_version 3 -write_id3v1 1'
+      )
+    }
+    common.unshift('-x', '--audio-format', 'mp3', '--audio-quality', q)
     common.unshift('-f', 'bestaudio/best')
   } else {
-    let selector = 'bv*+ba/b'
+    // Download the requested resolution first. The file is transcoded to a
+    // conservative MP4 profile afterwards so Android car head units do not
+    // depend on YouTube's original VP9/AV1/HEVC codec.
+    let maxHeight = 1080
     if (/^\d+p$/.test(job.quality)) {
-      const h = Number(job.quality.replace('p', ''))
-      selector = `bv*[height<=${h}]+ba/b[height<=${h}]`
+      maxHeight = Math.min(1080, Number(job.quality.replace('p', '')))
     }
+    maxHeight = Math.max(360, maxHeight)
+
+    const selector = `bv*[height<=${maxHeight}]+ba/b[height<=${maxHeight}]`
     common.unshift('-f', selector, '--merge-output-format', 'mp4')
   }
 
@@ -187,7 +226,15 @@ export async function runJob(
   const bin = await resolveBinary(process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')
   if (!bin) throw new Error('No se encontró yt-dlp.')
 
-  const baseArgs = argsFor({ ...job, ...input }, outDir)
+  const supportsJsRuntime = await commandSupportsOption(bin, '--js-runtimes')
+  const supportsPostprocessorArgs = await commandSupportsOption(bin, '--postprocessor-args')
+  if (supportsJsRuntime && nodeMajor() >= 22) {
+    job.message = 'yt-dlp detectado con soporte de JavaScript; preparando descarga…'
+  } else if (!supportsJsRuntime) {
+    job.message = 'yt-dlp antiguo detectado; se ejecutará sin --js-runtimes…'
+  }
+
+  const baseArgs = argsFor({ ...job, ...input }, outDir, supportsJsRuntime, supportsPostprocessorArgs)
   await executeYtDlp(bin, baseArgs, outDir, job)
 
   let mediaFiles = (await readdir(outDir, { withFileTypes: true }))
@@ -221,6 +268,12 @@ export async function runJob(
     )
   }
 
+  if (job.mode === 'video') {
+    const ffmpegBin = await resolveBinary(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+    if (!ffmpegBin) throw new Error('No se encontró FFmpeg para convertir los videos a MP4 compatible.')
+    mediaFiles = await transcodeVideosForAndroid(ffmpegBin, outDir, job)
+  }
+
   job.done = Math.min(job.total, mediaFiles.length)
   job.message = `Preparando ZIP con ${mediaFiles.length} archivo(s)…`
 
@@ -241,6 +294,89 @@ export async function runJob(
   job.message = `${mediaFiles.length} archivo(s) listos.`
 }
 
+
+async function transcodeVideosForAndroid(
+  ffmpegBin: string,
+  sourceDir: string,
+  job: any
+) {
+  const entries = await readdir(sourceDir, { withFileTypes: true })
+  const sources = entries
+    .filter(entry => entry.isFile())
+    .map(entry => entry.name)
+    .filter(name => /\.(mp4|webm|mkv|mov|avi|m4v|ts)$/i.test(name))
+
+  if (sources.length === 0) return []
+
+  const compatibleDir = join(sourceDir, '.compatible')
+  await rm(compatibleDir, { recursive: true, force: true })
+  await mkdir(compatibleDir, { recursive: true })
+
+  const outputs: string[] = []
+
+  for (let index = 0; index < sources.length; index++) {
+    const inputName = sources[index]
+    const inputPath = join(sourceDir, inputName)
+    const outputName = inputName.replace(/\.[^.]+$/, '.mp4')
+    const outputPath = join(compatibleDir, outputName)
+
+    job.message = `Convirtiendo video ${index + 1} de ${sources.length} a H.264 + AAC…`
+
+    await new Promise<void>((resolve, reject) => {
+      const args = [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-y',
+        '-i', inputPath,
+        '-map', '0:v:0',
+        '-map', '0:a:0?',
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-profile:v', 'main',
+        '-level', '4.1',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '160k',
+        '-ar', '48000',
+        '-ac', '2',
+        '-movflags', '+faststart',
+        '-map_metadata', '0',
+        outputPath
+      ]
+
+      const child = spawn(ffmpegBin, args, { cwd: sourceDir, windowsHide: true })
+      let stderr = ''
+      child.stderr.setEncoding('utf8')
+      child.stderr.on('data', (chunk: string) => {
+        stderr += chunk
+        if (stderr.length > 8000) stderr = stderr.slice(-8000)
+      })
+      child.on('error', reject)
+      child.on('close', code => {
+        if (code === 0) return resolve()
+        reject(new Error(`FFmpeg no pudo convertir "${inputName}" a MP4 H.264/AAC.\n${stderr.trim()}`))
+      })
+    })
+
+    const result = await stat(outputPath)
+    if (!result.isFile() || result.size === 0) {
+      throw new Error(`FFmpeg no generó correctamente el archivo "${outputName}".`)
+    }
+
+    outputs.push(outputName)
+  }
+
+  for (const name of sources) {
+    await rm(join(sourceDir, name), { force: true })
+  }
+
+  for (const name of outputs) {
+    await rename(join(compatibleDir, name), join(sourceDir, name))
+  }
+
+  await rm(compatibleDir, { recursive: true, force: true })
+  return outputs
+}
 
 function formatYtDlpError(stderr: string, stdout: string, code: number | null) {
   const details = [stderr, stdout]

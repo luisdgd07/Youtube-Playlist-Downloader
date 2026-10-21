@@ -15,7 +15,7 @@ export default defineEventHandler(async (event) => {
   const host = parsed.hostname.toLowerCase()
   const isYouTube = host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be'
   if (!isYouTube) throw createError({ statusCode: 400, statusMessage: 'Solo se admiten URLs de YouTube.' })
-  if (!['mp3','m4a','opus'].includes(format) && mode === 'music') throw createError({ statusCode: 400, statusMessage: 'Formato no permitido.' })
+  if (mode === 'music' && format !== 'mp3') throw createError({ statusCode: 400, statusMessage: 'El formato de música disponible es MP3 para máxima compatibilidad.' })
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 500) throw createError({ statusCode: 400, statusMessage: 'La cantidad debe estar entre 1 y 500 videos.' })
 
   await initJobRoot()

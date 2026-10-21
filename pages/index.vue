@@ -3,7 +3,7 @@ const url = ref('')
 const mode = ref<'music' | 'video'>('music')
 const quality = ref('best')
 const format = ref('mp3')
-const videoQuality = ref('1080p')
+const videoQuality = ref('720p')
 const quantity = ref(10)
 const loading = ref(false)
 const job = ref<any>(null)
@@ -115,24 +115,23 @@ onBeforeUnmount(() => {
             <label class="label">Calidad de video</label>
             <select v-model="videoQuality" class="select">
               <option value="best">Mejor disponible</option>
-              <option value="2160p">Hasta 4K</option>
-              <option value="1440p">Hasta 1440p</option>
-              <option value="1080p">Hasta 1080p</option>
-              <option value="720p">Hasta 720p</option>
+              <option value="720p">Hasta 720p · máxima compatibilidad</option>
+              <option value="1080p">Hasta 1080p · compatible</option>
+              <option value="480p">Hasta 480p · archivos pequeños</option>
             </select>
           </div>
 
           <div v-if="mode === 'music'">
             <label class="label">Formato</label>
             <select v-model="format" class="select">
-              <option value="mp3">MP3</option>
-              <option value="m4a">M4A</option>
-              <option value="opus">Opus</option>
+              <option value="mp3">MP3 · máxima compatibilidad</option>
             </select>
+            <div class="hint">44.1 kHz · estéreo · MP3 estándar</div>
           </div>
           <div v-else>
-            <label class="label">Contenedor</label>
-            <select class="select" disabled><option>MP4</option></select>
+            <label class="label">Formato compatible</label>
+            <select class="select" disabled><option>MP4 · H.264 + AAC</option></select>
+            <div class="hint">YUV420p · H.264 Main · AAC estéreo · optimizado para reproductores Android de carro</div>
           </div>
         </div>
 
@@ -159,8 +158,8 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="features">
-        <div class="card feature"><h3>♫ Música</h3><p>Convierte los elementos de la playlist a MP3, M4A u Opus con la calidad seleccionada.</p></div>
-        <div class="card feature"><h3>▣ Video</h3><p>Descarga videos individuales o playlists completas en MP4 con distintos límites de calidad.</p></div>
+        <div class="card feature"><h3>♫ Música</h3><p>Convierte los elementos de la playlist a MP3 estándar, pensado para máxima compatibilidad con teléfonos, vehículos, TVs y reproductores antiguos.</p></div>
+        <div class="card feature"><h3>▣ Video compatible</h3><p>Los videos se convierten a MP4 H.264 + AAC para evitar problemas con VP9, AV1 o HEVC en reproductores Android de carro.</p></div>
         <div class="card feature"><h3>⚙ Procesamiento por lotes</h3><p>El servidor empaqueta la playlist en un ZIP para que puedas descargarla como un solo archivo.</p></div>
       </section>
 
